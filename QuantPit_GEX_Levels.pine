@@ -1,0 +1,133 @@
+//@version=6
+// =============================================================================
+// QuantPit — GEX Levels (FREE — SPY & QQQ)
+// Draws Call Wall, Put Wall, Gamma Flip & HVL from a pasted levels string.
+//
+// FREE tier covers SPY and QQQ. Futures & cash indices (ES, MES, NQ, MNQ, SPX,
+// NDX) with intraday auto-refresh are QuantPit Pro — see the NinjaScript client.
+//
+// This is a DUMB RENDERER. It performs NO gamma math — it only parses the daily
+// levels string from your QuantPit subscription and draws lines. Put a SPY or
+// QQQ chart up and paste today's string into "Levels string" below.
+//
+// Paste format (one line, fields comma-separated, instruments pipe-separated):
+//   QPGEX|2026-06-21|SPY,cw,pw,gf,hvl|QQQ,cw,pw,gf,hvl
+//   (cw=Call Wall, pw=Put Wall, gf=Gamma Flip, hvl=HVL)
+//
+// Not financial advice.
+// =============================================================================
+indicator("QuantPit GEX Levels", overlay = true, max_lines_count = 20, max_labels_count = 20)
+
+// ------------------------------------------------------------------ inputs
+gData = "Levels"
+pasted = input.text_area(
+     defval = "QPGEX|paste-todays-string-here",
+     title  = "Levels string",
+     group  = gData)
+instSel = input.string("Auto", "Instrument",
+     options = ["Auto", "SPY", "QQQ"],
+     group = gData,
+     tooltip = "FREE tier = SPY & QQQ only. Auto detects from the chart symbol.")
+
+gStyle = "Style"
+showLbl = input.bool(true, "Show labels", group = gStyle)
+showDay = input.bool(true, "Show session-date / instrument table", group = gStyle)
+lblSz   = input.string("normal", "Label size", options = ["tiny", "small", "normal", "large"], group = gStyle)
+lnW     = input.int(2, "Line width", minval = 1, maxval = 5, group = gStyle)
+extSel  = input.string("right", "Extend lines", options = ["right", "both", "none"], group = gStyle)
+cwCol   = input.color(color.red,    "Call Wall",  group = gStyle)
+pwCol   = input.color(color.green,  "Put Wall",   group = gStyle)
+gfCol   = input.color(color.orange, "Gamma Flip", group = gStyle)
+hvlCol  = input.color(color.blue,   "HVL",        group = gStyle)
+
+// ------------------------------------------------------------- helpers
+f_size(string s) =>
+    s == "tiny" ? size.tiny : s == "small" ? size.small : s == "large" ? size.large : size.normal
+
+// FREE tier resolves SPY & QQQ only. Any other symbol returns "" -> Pro nudge.
+f_key() =>
+    string k = instSel
+    if instSel == "Auto"
+        string t = str.upper(syminfo.ticker)
+        k := str.contains(t, "QQQ") ? "QQQ" :
+             str.contains(t, "SPY") ? "SPY" : ""
+    k
+
+// Parse the pasted string for this instrument's four levels. Returns na's if absent.
+f_parse(string s, string key) =>
+    float cw = na
+    float pw = na
+    float gf = na
+    float hvl = na
+    string dt = ""
+    array<string> parts = str.split(s, "|")
+    int n = array.size(parts)
+    if n > 0 and str.contains(str.upper(array.get(parts, 0)), "QPGEX")
+        if n > 1
+            dt := array.get(parts, 1)
+        if n > 2 and key != ""
+            for i = 2 to n - 1
+                array<string> f = str.split(array.get(parts, i), ",")
+                if array.size(f) >= 5 and str.upper(array.get(f, 0)) == key
+                    cw  := str.tonumber(array.get(f, 1))
+                    pw  := str.tonumber(array.get(f, 2))
+                    gf  := str.tonumber(array.get(f, 3))
+                    hvl := str.tonumber(array.get(f, 4))
+    [cw, pw, gf, hvl, dt]
+
+// ------------------------------------------------------------- compute
+string key = f_key()
+[cw, pw, gf, hvl, sessDate] = f_parse(pasted, key)
+
+// persistent drawing handles (so we update in place, no duplicates)
+var line cwLn  = na
+var line pwLn  = na
+var line gfLn  = na
+var line hvlLn = na
+var label cwLb  = na
+var label pwLb  = na
+var label gfLb  = na
+var label hvlLb = na
+var table info  = na
+
+f_draw(line ln, label lb, float price, string name, color col) =>
+    line   _ln = ln
+    label  _lb = lb
+    line.delete(_ln)
+    label.delete(_lb)
+    if not na(price)
+        ex = extSel == "both" ? extend.both : extSel == "none" ? extend.none : extend.right
+        _ln := line.new(bar_index - 2, price, bar_index, price, extend = ex, color = col, width = lnW)
+        if showLbl
+            _lb := label.new(bar_index, price, name + "  " + str.tostring(price),
+                 xloc = xloc.bar_index, style = label.style_label_left,
+                 color = color.new(col, 80), textcolor = col, size = f_size(lblSz))
+    [_ln, _lb]
+
+if barstate.islast
+    [a1, a2] = f_draw(cwLn,  cwLb,  cw,  "Call Wall",  cwCol)
+    cwLn  := a1
+    cwLb  := a2
+    [b1, b2] = f_draw(pwLn,  pwLb,  pw,  "Put Wall",   pwCol)
+    pwLn  := b1
+    pwLb  := b2
+    [c1, c2] = f_draw(gfLn,  gfLb,  gf,  "Gamma Flip", gfCol)
+    gfLn  := c1
+    gfLb  := c2
+    [d1, d2] = f_draw(hvlLn, hvlLb, hvl, "HVL",        hvlCol)
+    hvlLn := d1
+    hvlLb := d2
+
+    table.delete(info)
+    if showDay
+        info := table.new(position.top_right, 1, 2, border_width = 1)
+        bool isPro = key == ""                                  // futures/index = Pro tier
+        bool noData = not isPro and na(cw) and na(pw) and na(gf) and na(hvl)
+        string msg = isPro  ? str.upper(syminfo.ticker) + " = QuantPit Pro" :
+                     noData ? "paste today's SPY/QQQ levels" :
+                     key + "  •  " + sessDate
+        table.cell(info, 0, 0, "QuantPit GEX  (Free: SPY/QQQ)", text_color = color.white,
+             bgcolor = color.new(color.teal, 0), text_size = size.small)
+        table.cell(info, 0, 1, msg, text_color = color.white,
+             bgcolor = (isPro or noData) ? color.new(color.red, 0) : color.new(color.gray, 20),
+             text_size = size.small)
